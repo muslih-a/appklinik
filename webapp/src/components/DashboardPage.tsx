@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import apiClient from '../api/apiClient';
 import AddClinicForm from './AddClinicForm';
+// --- [PERAPIAN] Tambahkan Link untuk navigasi ---
+import { Link } from 'react-router-dom';
 
 // Interface untuk data Klinik
 interface Clinic {
@@ -10,7 +12,7 @@ interface Clinic {
   phoneNumber?: string;
 }
 
-// --- 1. Interface baru untuk data statistik ---
+// Interface baru untuk data statistik
 interface AdminStats {
   totalClinics: number;
   totalDoctors: number;
@@ -26,11 +28,10 @@ const DashboardPage = () => {
   const [isFormVisible, setIsFormVisible] = useState(false);
   const [editingClinic, setEditingClinic] = useState<Clinic | null>(null);
   
-  // --- 2. State baru untuk statistik ---
+  // State baru untuk statistik
   const [stats, setStats] = useState<AdminStats | null>(null);
 
   const fetchClinics = useCallback(async () => {
-    // ... (fungsi fetchClinics tidak berubah)
     setLoading(true);
     try {
       const response = await apiClient.get('/clinics');
@@ -43,7 +44,6 @@ const DashboardPage = () => {
     }
   }, []);
 
-  // --- 3. Logika baru untuk mengambil data statistik ---
   useEffect(() => {
     const fetchStats = async () => {
       try {
@@ -51,7 +51,6 @@ const DashboardPage = () => {
         setStats(response.data);
       } catch (err) {
         console.error("Gagal mengambil data statistik:", err);
-        // Biarkan error utama ditangani oleh fetchClinics
       }
     };
 
@@ -65,8 +64,6 @@ const DashboardPage = () => {
     setEditingClinic(null);
   };
   
-  // ... (fungsi handleDelete dan handleEditClick tidak berubah)
-
   const handleDelete = async (clinicId: string) => {
     if (window.confirm('Apakah Anda yakin ingin menghapus klinik ini?')) {
       try {
@@ -99,11 +96,16 @@ const DashboardPage = () => {
 
   return (
     <div>
-      <h2>Admin Dashboard</h2>
-      <p>Selamat datang! Anda berhasil login.</p>
-      
-      {/* --- 4. Tampilan baru untuk kartu statistik --- */}
-      <hr />
+      {/* --- [PERAPIAN] Tambahkan Header & Navigasi Utama --- */}
+      <div style={{ padding: '10px', backgroundColor: '#f0f0f0', marginBottom: '20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <h2>Admin Dashboard</h2>
+        <nav>
+          {/* Link ini akan kita fungsikan nanti */}
+          <Link to="/billing-report" style={{ textDecoration: 'none', color: 'blue' }}>Laporan Billing</Link>
+        </nav>
+      </div>
+
+      {/* --- Bagian Statistik tidak berubah, hanya pemisah --- */}
       <h3>Statistik Platform</h3>
       {stats ? (
         <div style={{ display: 'flex', gap: '20px', marginBottom: '20px' }}>
@@ -117,9 +119,9 @@ const DashboardPage = () => {
       )}
 
       <hr />
+
       {/* --- Bagian Manajemen Klinik tidak berubah --- */}
       <h3>Manajemen Klinik</h3>
-      
       {loading ? (
         <p>Memuat data...</p>
       ) : clinics.length > 0 ? (

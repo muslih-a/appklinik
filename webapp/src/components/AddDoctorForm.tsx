@@ -27,15 +27,18 @@ const AddDoctorForm: React.FC<AddDoctorFormProps> = ({ onDoctorAdded, doctorToEd
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
+    // Mengisi form jika dalam mode edit
     if (doctorToEdit) {
       setName(doctorToEdit.name);
       setEmail(doctorToEdit.email);
-      setClinicId(doctorToEdit.clinic._id);
+      // Menggunakan optional chaining (?) untuk mencegah error jika clinic null
+      setClinicId(doctorToEdit.clinic?._id || ''); 
       setPassword('');
     }
   }, [doctorToEdit]);
 
   useEffect(() => {
+    // Mengambil daftar klinik untuk dropdown
     const fetchClinics = async () => {
       try {
         const response = await apiClient.get('/clinics');
@@ -50,28 +53,30 @@ const AddDoctorForm: React.FC<AddDoctorFormProps> = ({ onDoctorAdded, doctorToEd
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (!clinicId) {
-      setError("Silakan pilih klinik.");
+    if (!doctorToEdit && !password) {
+      setError("Password wajib diisi untuk dokter baru.");
       return;
     }
     setLoading(true);
     setError('');
 
-    const payload: { name: string; email: string; clinicId: string; password?: string } = {
+    const payload: any = {
       name,
       email,
-      clinicId,
+      role: 'Doctor',
     };
-    if (password) {
-      payload.password = password;
-    }
+    
+    if (password) payload.password = password;
+    if (clinicId) payload.clinicId = clinicId;
 
     try {
       if (doctorToEdit) {
-        await apiClient.patch(`/doctors/${doctorToEdit._id}`, payload);
+        // --- [PERBAIKAN ENDPOINT EDIT] ---
+        // Menggunakan alamat yang benar untuk update user oleh admin
+        await apiClient.patch(`/auth/admin/users/${doctorToEdit._id}`, payload);
         alert('Dokter berhasil diperbarui!');
       } else {
-        await apiClient.post('/doctors', payload);
+        await apiClient.post('/auth/admin/create-user', payload);
         alert('Dokter baru berhasil ditambahkan!');
       }
       onDoctorAdded();
@@ -88,8 +93,8 @@ const AddDoctorForm: React.FC<AddDoctorFormProps> = ({ onDoctorAdded, doctorToEd
       <h4>{doctorToEdit ? 'Form Edit Dokter' : 'Form Tambah Dokter Baru'}</h4>
       
       <div style={{ marginBottom: '10px' }}>
-        <label>Tugaskan ke Klinik:</label><br />
-        <select value={clinicId} onChange={(e) => setClinicId(e.target.value)} required>
+        <label>Tugaskan ke Klinik (Opsional):</label><br />
+        <select value={clinicId} onChange={(e) => setClinicId(e.target.value)}>
           <option value="">-- Pilih Klinik --</option>
           {clinicsList.map(clinic => (
             <option key={clinic._id} value={clinic._id}>
@@ -101,7 +106,6 @@ const AddDoctorForm: React.FC<AddDoctorFormProps> = ({ onDoctorAdded, doctorToEd
 
       <div>
         <label>Nama Dokter:</label><br />
-        {/* PERBAIKAN DI SINI */}
         <input type="text" value={name} onChange={(e) => setName(e.target.value)} required />
       </div>
       <div style={{ marginTop: '10px' }}>
@@ -109,8 +113,8 @@ const AddDoctorForm: React.FC<AddDoctorFormProps> = ({ onDoctorAdded, doctorToEd
         <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
       </div>
       <div style={{ marginTop: '10px' }}>
-        <label>Password Baru (opsional):</label><br />
-        <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} minLength={6} />
+        <label>Password {doctorToEdit ? '(Kosongkan jika tidak diubah)' : ''}:</label><br />
+        <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} minLength={6} required={!doctorToEdit} />
       </div>
       
       {error && <p style={{ color: 'red', marginTop: '10px' }}>{error}</p>}

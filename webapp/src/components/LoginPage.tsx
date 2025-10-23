@@ -1,14 +1,12 @@
 import React, { useState } from 'react';
-import axios from 'axios';
 import { useNavigate } from 'react-router-dom';
-import { jwtDecode } from 'jwt-decode'; // 1. Impor jwt-decode
+import { useAuth } from '../context/AuthContext'; // 1. Impor useAuth
+import apiClient from '../api/apiClient'; // Pastikan apiClient diimpor
 
-// 2. Buat "blueprint" untuk isi dari token kita
+// Interface untuk data dari token
 interface DecodedToken {
   id: string;
   role: string;
-  iat: number;
-  exp: number;
 }
 
 const LoginPage = () => {
@@ -16,37 +14,41 @@ const LoginPage = () => {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const navigate = useNavigate();
+  const { login } = useAuth(); // 2. Ambil fungsi login dari context
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
     setError('');
 
     try {
-      const response = await axios.post(
-        'http://localhost:3000/auth/login',
-        { email, password },
-      );
+      // Panggilan API tetap sama, tapi sekarang menggunakan apiClient
+      const response = await apiClient.post('/auth/login', { email, password });
 
       const token = response.data.token;
-      localStorage.setItem('authToken', token);
+      
+      // 3. Panggil fungsi login dari context dengan token
+      login(token);
 
-      // 3. Baca isi token setelah login berhasil
-      const decodedToken = jwtDecode<DecodedToken>(token);
+      // 4. Arahkan pengguna berdasarkan role
+      // Kita perlu decode di sini sekali untuk pengalihan halaman
+      const { jwtDecode } = await import('jwt-decode');
+      const decodedToken: DecodedToken = jwtDecode(token);
 
-      // 4. Arahkan pengguna berdasarkan role di dalam token
       if (decodedToken.role === 'Admin') {
-        navigate('/'); // Arahkan Admin ke dashboard utama
+        navigate('/');
       } else if (decodedToken.role === 'Doctor') {
-        navigate('/doctor/dashboard'); // Arahkan Dokter ke dashboard khusus
+        navigate('/doctor/dashboard');
       } else {
-        // Jika ada role lain (misal: Pasien), arahkan ke halaman login lagi
-        setError('Role tidak dikenal.');
-        localStorage.removeItem('authToken'); // Hapus token jika role tidak valid
+        // Asumsi role lain tidak seharusnya bisa login ke platform ini
+        setError('Anda tidak memiliki hak akses untuk platform ini.');
+        // Fungsi logout dari context akan membersihkan sisa data
+        const { logout } = useAuth();
+        logout();
       }
 
     } catch (err: any) {
       console.error('Login failed:', err);
-      setError(err.response?.data?.message || 'Login failed. Please try again.');
+      setError(err.response?.data?.message || 'Login gagal. Silakan coba lagi.');
     }
   };
 

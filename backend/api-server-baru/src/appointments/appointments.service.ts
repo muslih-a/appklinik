@@ -1,0 +1,391 @@
+import {
+  Injectable,
+  NotFoundException,
+  ConflictException,
+  ForbiddenException,
+} from '@nestjs/common';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model } from 'mongoose';
+import { Appointment, AppointmentDocument } from './schemas/appointment.schema';
+import { Clinic, ClinicDocument } from '../clinics/schemas/clinic.schema';
+import { CreateAppointmentDto } from './dto/create-appointment.dto';
+import { UpdateAppointmentStatusDto } from './dto/update-appointment-status.dto';
+import { RecordEmrDto } from './dto/record-emr.dto';
+import {
+  ScheduledVaccination,
+  ScheduledVaccinationDocument,
+} from '../scheduled-vaccinations/schemas/scheduled-vaccination.schema';
+// 1. Impor EventEmitter2
+import { EventEmitter2 } from '@nestjs/event-emitter';
+
+interface AuthenticatedUser {
+  id: string;
+  role: string;
+}
+
+@Injectable()
+export class AppointmentsService {
+  constructor(
+    @InjectModel(Appointment.name)
+    private appointmentModel: Model<AppointmentDocument>,
+    @InjectModel(Clinic.name)
+    private clinicModel: Model<ClinicDocument>,
+    @InjectModel(ScheduledVaccination.name)
+    private scheduledVaccinationModel: Model<ScheduledVaccinationDocument>,
+    // 2. Ganti EventsGateway dengan EventEmitter2
+    private readonly eventEmitter: EventEmitter2,
+  ) {}
+  
+  // Method bantu untuk memicu event update antrean
+  private async triggerQueueUpdate(clinicId: string) {
+    const activeQueue = await this.findActiveQueueForClinic(clinicId);
+    const onHoldQueue = await this.findOnHoldQueueForClinic(clinicId);
+    const dailyHistory = await this.findDailyHistoryForClinic(clinicId);
+    
+    // 3. Buat "pengumuman" ke sistem internal
+    this.eventEmitter.emit('queue.updated', {
+      clinicId,
+      payload: { activeQueue, onHoldQueue, dailyHistory },
+    });
+  }
+
+  async create(createAppointmentDto: CreateAppointmentDto): Promise<Appointment> {
+    const { patientId, doctorId, clinicId, appointmentTime } = createAppointmentDto;
+
+    const clinic = await this.clinicModel.findById(clinicId);
+    if (!clinic) {
+      throw new NotFoundException('Klinik tidak ditemukan.');
+    }
+
+    const appointmentDate = new Date(appointmentTime);
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+    const endOfToday = new Date();
+    endOfToday.setHours(23, 59, 59, 999);
+
+    if (appointmentDate >= startOfToday && appointmentDate <= endOfToday) {
+      if (clinic.isRegistrationClosed) {
+        throw new ConflictException(
+          'Mohon maaf, pendaftaran untuk hari ini sudah ditutup oleh klinik.',
+        );
+      }
+      if (clinic.registrationCloseTime && new Date() > clinic.registrationCloseTime) {
+        throw new ConflictException(
+          `Mohon maaf, pendaftaran telah ditutup secara otomatis.`,
+        );
+      }
+    }
+
+    const startOfDayForNewAppt = new Date(appointmentDate);
+    startOfDayForNewAppt.setHours(0, 0, 0, 0);
+    const endOfDayForNewAppt = new Date(appointmentDate);
+    endOfDayForNewAppt.setHours(23, 59, 59, 999);
+
+    const existingAppointmentOnThatDay = await this.appointmentModel.findOne({
+      patient: patientId,
+      status: { $in: ['SCHEDULED', 'WAITING', 'IN_PROGRESS', 'ON_HOLD'] },
+      appointmentTime: {
+        $gte: startOfDayForNewAppt,
+        $lte: endOfDayForNewAppt,
+      },
+    });
+    
+    if (existingAppointmentOnThatDay) {
+      throw new ConflictException(
+        'Pasien sudah memiliki janji temu aktif pada tanggal tersebut.',
+      );
+    }
+
+    const startOfDay = new Date(appointmentDate);
+    startOfDay.setHours(0, 0, 0, 0);
+    const endOfDay = new Date(appointmentDate);
+    endOfDay.setHours(23, 59, 59, 999);
+    const appointmentsCount = await this.appointmentModel.countDocuments({
+      doctor: doctorId,
+      appointmentTime: {
+        $gte: startOfDay,
+        $lte: endOfDay,
+      },
+    });
+    const queueNumber = appointmentsCount + 1;
+    const newAppointment = new this.appointmentModel({
+      patient: patientId,
+      doctor: doctorId,
+      clinic: clinicId,
+      appointmentTime,
+      queueNumber,
+    });
+    
+    const savedAppointment = await newAppointment.save();
+    
+    // Kirim update setelah janji temu baru dibuat
+    await this.triggerQueueUpdate(clinicId);
+
+    return savedAppointment;
+  }
+  
+  async updateStatus(
+    id: string,
+    updateAppointmentStatusDto: UpdateAppointmentStatusDto,
+  ): Promise<Appointment> {
+    const { status } = updateAppointmentStatusDto;
+
+    let appointmentToUpdate = await this.appointmentModel.findById(id);
+    if (!appointmentToUpdate) {
+      throw new NotFoundException(`Janji temu dengan ID "${id}" tidak ditemukan`);
+    }
+
+    const clinicId = appointmentToUpdate.clinic.toString();
+
+    if (status === 'SKIPPED') {
+      appointmentToUpdate.status = 'ON_HOLD';
+      appointmentToUpdate.onHoldTime = new Date();
+      await appointmentToUpdate.save();
+    } else {
+      const updatePayload: any = { status };
+      if (status === 'IN_PROGRESS') {
+        updatePayload.consultationStartTime = new Date();
+      }
+      if (status === 'COMPLETED') {
+        updatePayload.consultationEndTime = new Date();
+      }
+      if (status === 'WAITING') {
+        updatePayload.$unset = { onHoldTime: 1 };
+      }
+      
+      appointmentToUpdate = await this.appointmentModel.findByIdAndUpdate(
+        id,
+        updatePayload,
+        { new: true },
+      );
+
+      // [PERBAIKAN] Tambahkan pengecekan jika update gagal dan mengembalikan null
+      if (!appointmentToUpdate) {
+        throw new NotFoundException(`Janji temu dengan ID "${id}" tidak ditemukan setelah proses update`);
+      }
+    }
+    
+    // Panggil event update antrean
+    await this.triggerQueueUpdate(clinicId);
+    
+    // Bagian ini sekarang aman dari error
+    if (appointmentToUpdate.status === 'WAITING') {
+      // Logika untuk notifikasi panggilan bisa ditambahkan di sini via event emitter
+      // this.eventEmitter.emit('patient.called', { ... });
+    }
+    
+    return appointmentToUpdate;
+  }
+
+  async cancelByUser(appointmentId: string, patientId: string): Promise<Appointment> {
+    const appointment = await this.appointmentModel.findById(appointmentId);
+
+    if (!appointment) {
+      throw new NotFoundException(`Appointment with ID "${appointmentId}" not found`);
+    }
+    if (appointment.patient.toString() !== patientId) {
+      throw new ForbiddenException('Anda tidak berhak membatalkan janji temu ini.');
+    }
+    
+    appointment.status = 'CANCELLED';
+    await appointment.save();
+
+    await this.triggerQueueUpdate(appointment.clinic.toString());
+
+    return appointment;
+  }
+  
+  // ... SISA FILE (findActiveQueueForClinic, findOnHoldQueueForClinic, dll.) TIDAK BERUBAH ...
+  async findActiveQueueForClinic(clinicId: string): Promise<Appointment[]> {
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+    const endOfDay = new Date();
+    endOfDay.setHours(23, 59, 59, 999);
+    return this.appointmentModel.find({
+      clinic: clinicId,
+      appointmentTime: {
+        $gte: startOfDay,
+        $lte: endOfDay,
+      },
+      status: { $in: ['SCHEDULED', 'WAITING', 'IN_PROGRESS'] }
+    })
+      .populate('patient')
+      .sort({ queueNumber: 'asc' })
+      .exec();
+  }
+  async findOnHoldQueueForClinic(clinicId: string): Promise<Appointment[]> {
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+    const endOfDay = new Date();
+    endOfDay.setHours(23, 59, 59, 999);
+    return this.appointmentModel.find({
+      clinic: clinicId,
+      appointmentTime: {
+        $gte: startOfDay,
+        $lte: endOfDay,
+      },
+      status: 'ON_HOLD'
+    })
+      .populate('patient')
+      .sort({ onHoldTime: 'asc' })
+      .exec();
+  }
+  async findDailyHistoryForClinic(clinicId: string): Promise<Appointment[]> {
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+    const endOfDay = new Date();
+    endOfDay.setHours(23, 59, 59, 999);
+    return this.appointmentModel.find({
+      clinic: clinicId,
+      appointmentTime: { $gte: startOfDay, $lte: endOfDay },
+      status: { $in: ['SCHEDULED', 'WAITING', 'IN_PROGRESS', 'COMPLETED', 'SKIPPED', 'CANCELLED', 'ON_HOLD'] },
+    })
+      .populate('patient')
+      .sort({ queueNumber: 'asc' })
+      .exec();
+  }
+  async findMyAppointmentForToday(patientId: string) {
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+    const endOfDay = new Date();
+    endOfDay.setHours(23, 59, 59, 999);
+    const myAppointment = await this.appointmentModel
+      .findOne({
+        patient: patientId,
+        appointmentTime: { $gte: startOfDay, $lte: endOfDay },
+        status: { $in: ['SCHEDULED', 'WAITING', 'IN_PROGRESS', 'ON_HOLD'] },
+      })
+      .populate({
+        path: 'clinic',
+        select: 'averageConsultationTime openingTime nowServing',
+      })
+      .exec();
+    if (!myAppointment) {
+      return null;
+    }
+    const clinicData = myAppointment.clinic as ClinicDocument;
+    const nowServingNumber = clinicData.nowServing || 0;
+    let estimatedStartTime: Date | null = null;
+    if (clinicData && clinicData.averageConsultationTime && myAppointment.queueNumber > nowServingNumber) {
+      const patientsAhead = myAppointment.queueNumber - nowServingNumber - 1;
+      const averageTime = clinicData.averageConsultationTime;
+      const waitTimeInMinutes = patientsAhead >= 0 ? patientsAhead * averageTime : 0;
+      const now = new Date();
+      const [hours, minutes] = (clinicData.openingTime ?? '08:00').split(':').map(Number);
+      const openingTimeToday = new Date();
+      openingTimeToday.setHours(hours, minutes, 0, 0);
+      const calculationBaseTime = now > openingTimeToday ? now : openingTimeToday;
+      estimatedStartTime = new Date(calculationBaseTime.getTime() + waitTimeInMinutes * 60000);
+    }
+    return {
+      ...myAppointment.toObject(),
+      estimatedStartTime: estimatedStartTime,
+      nowServing: nowServingNumber,
+    };
+  }
+  async findHistoryForDoctor(
+    user: AuthenticatedUser,
+    status?: string,
+    startDate?: Date,
+    endDate?: Date,
+  ) {
+    const query: any = { doctor: user.id };
+    if (status) {
+      query.status = status;
+    }
+    if (startDate && endDate) {
+      query.appointmentTime = { $gte: startDate, $lte: endDate };
+    }
+    const results = await this.appointmentModel
+      .find(query)
+      .populate('patient', 'name')
+      .sort({ appointmentTime: -1 })
+      .exec();
+    return {
+      count: results.length,
+      data: results,
+    };
+  }
+  async findScheduleForDoctor(
+    user: AuthenticatedUser,
+    startDate: Date,
+    endDate: Date,
+  ) {
+    const appointments = await this.appointmentModel
+      .find({
+        doctor: user.id,
+        appointmentTime: { $gte: startDate, $lte: endDate },
+        status: { $in: ['SCHEDULED', 'WAITING', 'IN_PROGRESS', 'ON_HOLD'] },
+      })
+      .populate('patient', 'name')
+      .sort({ appointmentTime: 'asc' })
+      .exec();
+    const vaccinations = await this.scheduledVaccinationModel
+      .find({
+        doctor: user.id,
+        scheduledDate: { $gte: startDate, $lte: endDate },
+        status: 'SCHEDULED',
+      })
+      .populate('patient', 'name')
+      .sort({ scheduledDate: 'asc' })
+      .exec();
+    const combinedSchedule = [
+      ...appointments.map(appt => ({
+        id: appt._id,
+        title: `Konsultasi: ${appt.patient.name}`,
+        start: appt.appointmentTime,
+        end: new Date(new Date(appt.appointmentTime).getTime() + 60 * 60 * 1000),
+        type: 'appointment'
+      })),
+      ...vaccinations.map(vax => ({
+        id: vax._id,
+        title: `Vaksin (${vax.vaccineName}): ${vax.patient.name}`,
+        start: vax.scheduledDate,
+        end: new Date(new Date(vax.scheduledDate).getTime() + 30 * 60 * 1000),
+        type: 'vaccination'
+      }))
+    ];
+    combinedSchedule.sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime());
+    return combinedSchedule;
+  }
+  async recordEmr(
+    id: string,
+    recordEmrDto: RecordEmrDto,
+  ): Promise<Appointment> {
+    const appointment = await this.appointmentModel.findByIdAndUpdate(
+      id,
+      { $set: recordEmrDto },
+      { new: true },
+    );
+    if (!appointment) {
+      throw new NotFoundException(`Appointment with ID "${id}" not found`);
+    }
+    return appointment;
+  }
+  async findForPatient(patientId: string): Promise<Appointment[]> {
+    return this.appointmentModel
+      .find({ patient: patientId })
+      .populate('doctor', 'name')
+      .populate('clinic', 'name')
+      .sort({ appointmentTime: 'desc' })
+      .exec();
+  }
+  async getActiveQueue(clinicId: string): Promise<AppointmentDocument[]> {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    const queue = await this.appointmentModel
+      .find({
+        clinic: clinicId,
+        status: 'WAITING',
+        createdAt: {
+          $gte: today,
+          $lt: tomorrow,
+        },
+      })
+      .sort({ queueNumber: 'asc' })
+      .exec();
+    return queue;
+  }
+}

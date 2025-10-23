@@ -1,0 +1,62 @@
+/* Reset default styles */
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background-color: #1a202c; /* Dark background */
+  color: white;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  height: 100vh;
+}
+
+.display-board {
+  text-align: center;
+  width: 90%;
+  max-width: 1200px;
+}
+
+.card {
+  background-color: #2d3748;
+  border-radius: 15px;
+  padding: 2rem;
+  margin-bottom: 2rem;
+  box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+  border: 1px solid #4a5568;
+}
+
+.card h2 {
+  font-size: 3rem;
+  font-weight: 300;
+  color: #a0aec0; /* Lighter text color for headers */
+  margin-top: 0;
+  margin-bottom: 1.5rem;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+}
+
+.now-serving .queue-number-main {
+  font-size: 15rem;
+  font-weight: bold;
+  color: #68d391; /* Green color for emphasis */
+  line-height: 1;
+}
+
+.next-in-queue .queue-number-next {
+  font-size: 6rem;
+  font-weight: 500;
+  color: #f6e05e; /* Yellow color */
+  line-height: 1;
+}
+
+.error-message {
+  font-size: 2.5rem;
+  color: #e53e3e; /* Red color for errors */
+  background-color: #2d3748;
+  padding: 2rem;
+  border-radius: 15px;
+}

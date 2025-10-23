@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { Link } from 'react-router-dom'; // 1. Impor Link
 import apiClient from '../api/apiClient';
 import AddDoctorForm from './AddDoctorForm';
+import { useAuth } from '../context/AuthContext'; // 2. Impor useAuth yang benar
 
 interface Clinic {
   _id: string;
@@ -14,6 +16,7 @@ interface Doctor {
 }
 
 const DoctorManagementPage = () => {
+  const { user, isLoading: isAuthLoading } = useAuth(); // 3. Dapatkan status user
   const [doctors, setDoctors] = useState<Doctor[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -23,7 +26,7 @@ const DoctorManagementPage = () => {
   const fetchDoctors = useCallback(async () => {
     setLoading(true);
     try {
-      const response = await apiClient.get('/doctors');
+      const response = await apiClient.get('/doctors?role=Doctor');
       setDoctors(response.data);
     } catch (err) {
       setError('Gagal mengambil data dokter.');
@@ -34,14 +37,15 @@ const DoctorManagementPage = () => {
   }, []);
 
   useEffect(() => {
-    fetchDoctors();
-  }, [fetchDoctors]);
+    if (user) {
+        fetchDoctors();
+    }
+  }, [fetchDoctors, user]);
 
-  // Nama fungsi ini digunakan saat form berhasil (baik tambah maupun edit)
   const handleFormSuccess = () => {
     fetchDoctors();
     setIsFormVisible(false);
-    setEditingDoctor(null); // Bersihkan mode edit setelah sukses
+    setEditingDoctor(null);
   };
 
   const handleDelete = async (doctorId: string) => {
@@ -69,19 +73,23 @@ const DoctorManagementPage = () => {
     }
   };
 
-  if (loading) return <p>Memuat data dokter...</p>;
+  if (isAuthLoading || loading) return <p>Memuat...</p>;
   if (error) return <p style={{ color: 'red' }}>{error}</p>;
 
   return (
     <div>
+      {/* 4. Tambahkan Link Kembali ke Dashboard */}
+      <div style={{ marginBottom: '20px' }}>
+        <Link to="/dashboard">&larr; Kembali ke Dashboard</Link>
+      </div>
+
       <h3>Manajemen Dokter</h3>
       {doctors.length > 0 ? (
         <ul>
           {doctors.map((doctor) => (
             <li key={doctor._id}>
-              <strong>{doctor.name}</strong> ({doctor.email}) - Bertugas di: {doctor.clinic.name}
+              <strong>{doctor.name}</strong> ({doctor.email}) - Bertugas di: {doctor.clinic?.name || 'Belum ditugaskan'}
               
-              {/* Tambahkan tombol Edit */}
               <button onClick={() => handleEditClick(doctor)} style={{ marginLeft: '10px' }}>
                 Edit
               </button>
@@ -99,12 +107,11 @@ const DoctorManagementPage = () => {
 
       {isFormVisible && (
         <AddDoctorForm 
-          onDoctorAdded={handleFormSuccess} // Gunakan nama fungsi yang benar
+          onDoctorAdded={handleFormSuccess}
           doctorToEdit={editingDoctor} 
         />
       )}
 
-      {/* Gunakan handleToggleForm agar mode edit dibersihkan saat dibatalkan */}
       <button onClick={handleToggleForm} style={{ marginTop: '10px' }}>
         {isFormVisible ? 'Batal' : 'Tambah Dokter Baru'}
       </button>

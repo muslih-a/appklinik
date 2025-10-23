@@ -11,12 +11,12 @@ interface UserProfile {
   clinic: ClinicProfile | null;
 }
 
-// --- 1. Perbarui Interface ---
+// --- [PERUBAHAN 1] Interface disesuaikan dengan skema baru ---
 interface ClinicProfile {
   _id: string;
   name: string;
   address: string;
-  operatingHours?: string;
+  openingTime?: string; // Mengganti operatingHours
   averageConsultationTime?: number;
 }
 
@@ -30,17 +30,16 @@ const SettingsPage = () => {
   const [editableDoctorProfile, setEditableDoctorProfile] = useState({ name: '', address: '', phoneNumber: '' });
   const [isSavingDoctor, setIsSavingDoctor] = useState(false);
 
-  // --- 2. Perbarui State untuk Form Edit Klinik ---
+  // --- [PERUBAHAN 2] State form disesuaikan ---
   const [isClinicEditMode, setIsClinicEditMode] = useState(false);
   const [editableClinicProfile, setEditableClinicProfile] = useState({ 
     name: '', 
     address: '', 
-    operatingHours: '',
-    averageConsultationTime: 15 // Default
+    openingTime: '08:00', // Mengganti operatingHours
+    averageConsultationTime: 15
   });
   const [isSavingClinic, setIsSavingClinic] = useState(false);
 
-  // ... (fetchData dan fungsi-fungsi dokter tidak berubah) ...
   const fetchData = useCallback(async () => {
     try {
       setLoading(true);
@@ -92,7 +91,6 @@ const SettingsPage = () => {
     if (!clinicProfile) return;
     setIsSavingClinic(true);
     try {
-      // Pastikan data yang dikirim adalah angka
       const payload = {
         ...editableClinicProfile,
         averageConsultationTime: Number(editableClinicProfile.averageConsultationTime)
@@ -182,14 +180,16 @@ const SettingsPage = () => {
                 onChange={(e) => setEditableClinicProfile({...editableClinicProfile, address: e.target.value})}
                 style={{ width: '98%', padding: '5px', marginBottom: '10px', height: '60px' }}
               />
-              <label>Jam Operasional:</label>
+              
+              {/* --- [PERUBAHAN 3] Input jam operasional diubah menjadi jam buka --- */}
+              <label>Jam Buka Klinik (format HH:mm, contoh: 09:00):</label>
               <input 
-                type="text" 
-                value={editableClinicProfile.operatingHours}
-                onChange={(e) => setEditableClinicProfile({...editableClinicProfile, operatingHours: e.target.value})}
+                type="time" // Menggunakan type="time" untuk UX yang lebih baik
+                value={editableClinicProfile.openingTime}
+                onChange={(e) => setEditableClinicProfile({...editableClinicProfile, openingTime: e.target.value})}
                 style={{ width: '98%', padding: '5px', marginBottom: '10px' }}
               />
-              {/* --- 3. Input baru untuk rata-rata waktu --- */}
+
               <label>Rata-rata Waktu Konsultasi (menit):</label>
               <input 
                 type="number" 
@@ -197,6 +197,7 @@ const SettingsPage = () => {
                 onChange={(e) => setEditableClinicProfile({...editableClinicProfile, averageConsultationTime: parseInt(e.target.value, 10) || 0})}
                 style={{ width: '98%', padding: '5px', marginBottom: '10px' }}
               />
+
               <button onClick={handleSaveClinicProfile} disabled={isSavingClinic}>
                 {isSavingClinic ? 'Menyimpan...' : 'Simpan'}
               </button>
@@ -208,15 +209,18 @@ const SettingsPage = () => {
             <div>
               <p><strong>Nama Klinik:</strong> {clinicProfile.name}</p>
               <p><strong>Alamat Klinik:</strong> {clinicProfile.address}</p>
-              <p><strong>Jam Operasional:</strong> {clinicProfile.operatingHours || 'Belum diatur'}</p>
-              {/* --- 4. Tampilan baru untuk rata-rata waktu --- */}
+
+              {/* --- [PERUBAHAN 4] Tampilan jam operasional diubah menjadi jam buka --- */}
+              <p><strong>Jam Buka Klinik:</strong> {clinicProfile.openingTime || 'Belum diatur'}</p>
+              
               <p><strong>Rata-rata Waktu Konsultasi:</strong> {clinicProfile.averageConsultationTime} menit</p>
+              
               <button onClick={() => {
-                // --- 5. Siapkan data untuk form edit ---
+                // --- [PERUBAHAN 5] Menyiapkan data untuk form edit ---
                 setEditableClinicProfile({
                   name: clinicProfile.name,
                   address: clinicProfile.address,
-                  operatingHours: clinicProfile.operatingHours || '',
+                  openingTime: clinicProfile.openingTime || '08:00',
                   averageConsultationTime: clinicProfile.averageConsultationTime || 15
                 });
                 setIsClinicEditMode(true);
