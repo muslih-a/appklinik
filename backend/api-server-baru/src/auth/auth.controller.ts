@@ -4,6 +4,7 @@ import { SignUpDto } from './dto/sign-up.dto';
 import { LocalAuthGuard } from './guards/local-auth.guard';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { UpdateProfileDto } from './dto/update-profile.dto';
+import { HttpCode, HttpStatus, BadRequestException } from '@nestjs/common';
 
 @Controller('auth')
 export class AuthController {
@@ -53,5 +54,21 @@ export class AuthController {
   @UseGuards(JwtAuthGuard)
   findAllByClinic(@Param('clinicId') clinicId: string) {
     return this.authService.findAllByClinic(clinicId);
+  }
+
+  @UseGuards(JwtAuthGuard) // Melindungi endpoint, hanya user login yang bisa akses
+  @Post('save-push-token') // Atau bisa pakai @Put jika lebih sesuai
+  @HttpCode(HttpStatus.OK) // Set status response ke 200 OK
+  async savePushToken(
+      @Request() req, // Untuk mendapatkan user ID dari JWT
+      @Body('expoPushToken') token: string // Mengambil token dari body request
+  ) {
+      const userId = req.user.id; // Ambil user ID dari payload JWT
+      if (!token) {
+         // Anda perlu import BadRequestException dari @nestjs/common
+         throw new BadRequestException('expoPushToken tidak boleh kosong'); // Validasi input
+      }
+      await this.authService.saveExpoPushToken(userId, token);
+      return { message: 'Expo Push Token berhasil disimpan.' }; // Beri response sukses
   }
 }

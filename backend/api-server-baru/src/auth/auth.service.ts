@@ -1,4 +1,4 @@
-import { Injectable, ConflictException, UnauthorizedException, NotFoundException } from '@nestjs/common';
+import { Injectable, ConflictException, UnauthorizedException, NotFoundException, Logger } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { User, UserDocument } from './schemas/user.schema';
@@ -9,6 +9,7 @@ import { UpdateProfileDto } from './dto/update-profile.dto';
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
   constructor(
     @InjectModel(User.name) private userModel: Model<UserDocument>,
     private jwtService: JwtService,
@@ -95,5 +96,20 @@ export class AuthService {
   
   async findAllByClinic(clinicId: string): Promise<User[]> {
     return this.userModel.find({ role: 'Doctor', clinic: clinicId }).select('-password').exec();
+  }
+  async saveExpoPushToken(userId: string, token: string): Promise<UserDocument> { // Gunakan UserDocument agar tipe lebih jelas
+  this.logger.log(`Mencoba menyimpan Expo Push Token untuk user ${userId}`); // Tambahkan logger
+  const user = await this.userModel.findByIdAndUpdate(
+    userId,
+    { $set: { expoPushToken: token } }, // Simpan ke field expoPushToken
+    { new: true }
+  ).select('-password').exec(); // Tambahkan exec()
+
+  if (!user) {
+    this.logger.error(`User ${userId} tidak ditemukan saat mencoba simpan expoPushToken`);
+    throw new NotFoundException('User tidak ditemukan');
+  }
+  this.logger.log(`Expo Push Token berhasil disimpan untuk user ${userId}: ${token}`);
+  return user;
   }
 }

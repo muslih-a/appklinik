@@ -18,7 +18,7 @@ export class User {
 
   @Prop({
     required: true,
-    enum: ['Admin', 'Doctor', 'Patient'],
+    enum: ['Admin', 'Doctor', 'Patient','AdminKlinik'],
     default: 'Patient',
   })
   role: string;
@@ -34,6 +34,9 @@ export class User {
 
   @Prop({ type: String, required: false })
   phoneNumber?: string;
+
+  @Prop({ type: String, required: false, index: true }) // Buat index jika sering dicari
+  expoPushToken?: string; // Tambahkan field ini
 
   // --- [FIELD BARU DITAMBAHKAN DI SINI] ---
   @Prop({ type: Date, required: false }) // Dibuat opsional, tapi wajib untuk pasien

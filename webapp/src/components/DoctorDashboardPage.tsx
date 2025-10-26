@@ -156,8 +156,9 @@ const DoctorDashboardPage = () => {
     }, [viewMode, fetchInitialData]);
 
     useEffect(() => {
-        const SOCKET_URL = 'http://172.31.53.217:3000';
+        const SOCKET_URL = 'http://10.189.192.217:3000';
         // const SOCKET_URL = 'http://192.168.1.6:3000';
+        
         const token = localStorage.getItem('authToken');
 
         if (token) {
@@ -205,21 +206,25 @@ const DoctorDashboardPage = () => {
     };
 
     const handleStartConsultation = async (appointment: Appointment) => {
-        // 3. Logika diubah: 1 API call + 1 event WebSocket
-        try {
-            // Step 1: Ubah status janji temu menjadi IN_PROGRESS (masih via API)
-            await apiClient.patch(`/appointments/${appointment._id}/status`, { status: 'IN_PROGRESS' });
+    try {
+        // Step 1: Ubah status janji temu menjadi IN_PROGRESS (via API)
+        console.log(`Mengubah status appointment ${appointment._id} menjadi IN_PROGRESS`);
+        await apiClient.patch(`/appointments/${appointment._id}/status`, { status: 'IN_PROGRESS' });
 
-            // Step 2: Perintahkan server untuk update 'nowServing' (via WebSocket)
-            if (socket) {
-                socket.emit('doctor:updateNowServing', { queueNumber: appointment.queueNumber });
-            } else {
-                alert('Koneksi real-time belum siap, coba lagi sebentar.');
-            }
-        } catch (err) {
-            alert('Gagal memulai konsultasi. Silakan coba lagi.');
-            console.error(err);
-        }
+        // --- [PERBAIKAN DI SINI] ---
+        // Step 2: Update 'nowServing' di klinik (via API)
+        console.log(`Mengupdate nowServing ke ${appointment.queueNumber}`);
+        await apiClient.patch('/clinics/my-clinic/now-serving', { queueNumber: appointment.queueNumber });
+        // -----------------------------
+
+        // Tidak perlu emit WebSocket dari sini, karena update status
+        // di atas sudah memicu 'queue.updated' dari backend
+
+    } catch (err: any) { // Tangkap error
+        alert('Gagal memulai konsultasi. Silakan coba lagi.');
+        // Log error yang lebih detail
+        console.error("Error starting consultation:", err.response?.data || err.message || err);
+    }
     };
 
     const handleDataSaved = () => {

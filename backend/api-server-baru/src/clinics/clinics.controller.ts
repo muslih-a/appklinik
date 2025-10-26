@@ -54,14 +54,14 @@ export class ClinicsController {
 
   @Get(':id/patients')
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('Admin', 'Doctor')
+  @Roles('Admin', 'Doctor', 'AdminKlinik')
   findPatients(@Param('id') id: string) {
     return this.clinicsService.findPatientsByClinic(id);
   }
 
   @Get(':id')
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('Admin', 'Doctor', 'Patient')
+  @Roles('Admin', 'Doctor', 'Patient', 'AdminKlinik')
   findOne(@Param('id') id: string) {
     return this.clinicsService.findOne(id);
   }
@@ -80,7 +80,7 @@ export class ClinicsController {
 
   @Patch('my-clinic/now-serving')
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('Doctor')
+  @Roles('Doctor', 'AdminKlinik')
   @HttpCode(HttpStatus.OK)
   updateNowServing(
     @Request() req,
@@ -94,28 +94,28 @@ export class ClinicsController {
 
   @Patch('my-clinic/close-registration-now')
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('Doctor')
+  @Roles('Doctor', 'AdminKlinik')
   closeRegistrationNow(@Request() req) {
     return this.clinicsService.closeRegistrationNow(req.user);
   }
 
   @Patch('my-clinic/open-registration')
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('Doctor')
+  @Roles('Doctor', 'AdminKlinik')
   openRegistration(@Request() req) {
     return this.clinicsService.openRegistration(req.user);
   }
 
   @Patch('my-clinic/schedule-closing')
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('Doctor')
+  @Roles('Doctor', 'AdminKlinik')
   scheduleClosing(@Request() req, @Body() scheduleClosingDto: ScheduleClosingDto) {
     return this.clinicsService.scheduleClosing(req.user, scheduleClosingDto.closeTime);
   }
 
   @Patch(':id')
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('Admin', 'Doctor')
+  @Roles('Admin', 'Doctor', 'AdminKlinik')
   update(@Param('id') id: string, @Body() updateClinicDto: CreateClinicDto, @Request() req) {
     if (req.user.role === 'Admin') {
       return this.clinicsService.update(id, updateClinicDto);

@@ -11,7 +11,7 @@ export class VaccinationsController {
 
   // Endpoint ini HANYA untuk DOKTER
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('Doctor')
+  @Roles('Doctor', 'AdminKlinik')
   @Post()
   create(@Body() createVaccinationDto: CreateVaccinationDto) {
     return this.vaccinationsService.create(createVaccinationDto);

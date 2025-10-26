@@ -3,6 +3,7 @@ import {
   NotFoundException,
   ConflictException,
   ForbiddenException,
+  Logger,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
@@ -17,6 +18,8 @@ import {
 } from '../scheduled-vaccinations/schemas/scheduled-vaccination.schema';
 // 1. Impor EventEmitter2
 import { EventEmitter2 } from '@nestjs/event-emitter';
+import { NotificationService } from '../notifications/notifications.service'; // <-- 1. Import NotificationService
+import { UserDocument } from 'src/auth/schemas/user.schema'; // <-- Pastikan UserDocument diimpor jika belum
 
 interface AuthenticatedUser {
   id: string;
@@ -25,6 +28,7 @@ interface AuthenticatedUser {
 
 @Injectable()
 export class AppointmentsService {
+  private readonly logger = new Logger(AppointmentsService.name);
   constructor(
     @InjectModel(Appointment.name)
     private appointmentModel: Model<AppointmentDocument>,
@@ -34,6 +38,7 @@ export class AppointmentsService {
     private scheduledVaccinationModel: Model<ScheduledVaccinationDocument>,
     // 2. Ganti EventsGateway dengan EventEmitter2
     private readonly eventEmitter: EventEmitter2,
+    private readonly notificationService: NotificationService, // <-- 2. Inject NotificationService
   ) {}
   
   // Method bantu untuk memicu event update antrean
@@ -130,51 +135,103 @@ export class AppointmentsService {
   ): Promise<Appointment> {
     const { status } = updateAppointmentStatusDto;
 
-    let appointmentToUpdate = await this.appointmentModel.findById(id);
+    // Gunakan .populate untuk mendapatkan data pasien dan klinik sekaligus
+    let appointmentToUpdate = await this.appointmentModel.findById(id)
+      .populate<{ patient: UserDocument }>('patient') // Populate data pasien
+      .populate<{ clinic: ClinicDocument }>('clinic'); // Populate data klinik
+
     if (!appointmentToUpdate) {
       throw new NotFoundException(`Janji temu dengan ID "${id}" tidak ditemukan`);
     }
 
-    const clinicId = appointmentToUpdate.clinic.toString();
+    // Ambil clinicId dari data yang sudah di-populate
+    const clinicId = appointmentToUpdate.clinic.id.toString();
+    const clinicName = appointmentToUpdate.clinic.name; // Ambil nama klinik
 
-    if (status === 'SKIPPED') {
+    // --> [MODIFIKASI LOGIKA UPDATE STATUS] <--
+    const previousStatus = appointmentToUpdate.status; // Simpan status sebelumnya
+    let updatePayload: any = {};
+    const now = new Date();
+
+    if (status === 'SKIPPED' && previousStatus !== 'ON_HOLD') {
       appointmentToUpdate.status = 'ON_HOLD';
-      appointmentToUpdate.onHoldTime = new Date();
-      await appointmentToUpdate.save();
+      appointmentToUpdate.onHoldTime = now;
+      // Jangan langsung save, biarkan dihandle oleh findByIdAndUpdate di bawah
     } else {
-      const updatePayload: any = { status };
-      if (status === 'IN_PROGRESS') {
-        updatePayload.consultationStartTime = new Date();
-      }
-      if (status === 'COMPLETED') {
-        updatePayload.consultationEndTime = new Date();
-      }
-      if (status === 'WAITING') {
-        updatePayload.$unset = { onHoldTime: 1 };
-      }
-      
-      appointmentToUpdate = await this.appointmentModel.findByIdAndUpdate(
+        updatePayload.status = status; // Set status baru
+
+        // Logika waktu berdasarkan status baru
+        if (status === 'IN_PROGRESS' && !appointmentToUpdate.consultationStartTime) {
+          updatePayload.consultationStartTime = now;
+        }
+        if (status === 'COMPLETED' && !appointmentToUpdate.consultationEndTime) {
+            updatePayload.consultationEndTime = now;
+        }
+        // Jika status kembali ke WAITING dari ON_HOLD, hapus onHoldTime
+        if (status === 'WAITING' && previousStatus === 'ON_HOLD') {
+            updatePayload.$unset = { onHoldTime: 1 };
+        }
+    }
+    // Gabungkan perubahan status (jika skipped) ke payload utama
+    if (appointmentToUpdate.status === 'ON_HOLD' && status === 'SKIPPED') {
+      updatePayload = {
+        ...updatePayload, // Gabungkan payload lain jika ada
+        status: 'ON_HOLD',
+        onHoldTime: appointmentToUpdate.onHoldTime
+      };
+    } else if (status !== 'SKIPPED') {
+      // Jika bukan skipped, pastikan status di payload benar
+      updatePayload.status = status;
+    }
+
+    // Lakukan update di database
+    const updatedAppointment = await this.appointmentModel.findByIdAndUpdate(
         id,
         updatePayload,
-        { new: true },
-      );
+        { new: true }, // Mengembalikan dokumen yang sudah terupdate
+    )
+      .populate<{ patient: UserDocument }>('patient') // Populate lagi untuk mendapatkan data terbaru
+      .populate<{ clinic: ClinicDocument }>('clinic');
 
-      // [PERBAIKAN] Tambahkan pengecekan jika update gagal dan mengembalikan null
-      if (!appointmentToUpdate) {
-        throw new NotFoundException(`Janji temu dengan ID "${id}" tidak ditemukan setelah proses update`);
+
+    if (!updatedAppointment) {
+      throw new NotFoundException(
+        `Janji temu dengan ID "${id}" tidak ditemukan setelah proses update`,
+      );
+    }
+    // ---------------------------------------------------
+
+    // Panggil event update antrean (WebSocket)
+    await this.triggerQueueUpdate(clinicId);
+
+    // ---> [LOGIKA KIRIM NOTIFIKASI PUSH] <---
+    // Kirim notifikasi jika status berubah menjadi 'WAITING' (dipanggil dari antrian)
+    // atau 'IN_PROGRESS' (dipanggil langsung/mulai konsultasi)
+    const shouldNotify = (status === 'WAITING' && previousStatus !== 'WAITING') ||
+                         (status === 'IN_PROGRESS' && previousStatus !== 'IN_PROGRESS');
+
+    if (shouldNotify) {
+      const patient = updatedAppointment.patient; // Ambil data pasien dari hasil populate
+      if (patient && patient.expoPushToken) {
+        this.logger.log(`Mencoba mengirim notifikasi panggilan ke pasien ID: ${patient._id}`);
+        // Kirim notifikasi tanpa menunggu (async) agar tidak memblok response API
+        this.notificationService.sendPatientCallNotification(
+            patient.expoPushToken,
+            clinicName, // Gunakan nama klinik dari hasil populate
+            updatedAppointment.queueNumber, // Sertakan nomor antrian
+        ).catch(err => {
+            // Log error jika pengiriman gagal, tapi jangan throw error ke client
+            this.logger.error(`Error background saat mengirim notifikasi untuk appointment ${id}: ${err.message}`);
+        });
+      } else {
+        this.logger.warn(
+          `Expo Push Token tidak ditemukan untuk pasien ID: ${patient?._id} pada appointment ${id}. Tidak dapat mengirim notifikasi panggilan.`,
+        );
       }
     }
-    
-    // Panggil event update antrean
-    await this.triggerQueueUpdate(clinicId);
-    
-    // Bagian ini sekarang aman dari error
-    if (appointmentToUpdate.status === 'WAITING') {
-      // Logika untuk notifikasi panggilan bisa ditambahkan di sini via event emitter
-      // this.eventEmitter.emit('patient.called', { ... });
-    }
-    
-    return appointmentToUpdate;
+    // ----------------------------------------------------
+
+    return updatedAppointment; // Kembalikan appointment yang sudah terupdate
   }
 
   async cancelByUser(appointmentId: string, patientId: string): Promise<Appointment> {

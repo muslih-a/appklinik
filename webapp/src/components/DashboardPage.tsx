@@ -99,10 +99,6 @@ const DashboardPage = () => {
       {/* --- [PERAPIAN] Tambahkan Header & Navigasi Utama --- */}
       <div style={{ padding: '10px', backgroundColor: '#f0f0f0', marginBottom: '20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <h2>Admin Dashboard</h2>
-        <nav>
-          {/* Link ini akan kita fungsikan nanti */}
-          <Link to="/billing-report" style={{ textDecoration: 'none', color: 'blue' }}>Laporan Billing</Link>
-        </nav>
       </div>
 
       {/* --- Bagian Statistik tidak berubah, hanya pemisah --- */}

@@ -18,6 +18,8 @@ import { DashboardModule } from './dashboard/dashboard.module';
 import { DoctorsModule } from './doctors/doctors.module';
 // --- 1. Impor PatientsModule ---
 import { PatientsModule } from './patients/patients.module';
+import { NotificationsModule } from './notifications/notifications.module';
+import { UserManagementModule } from './user-management/user-management.module';
 
 @Module({
   imports: [
@@ -36,6 +38,7 @@ import { PatientsModule } from './patients/patients.module';
     }),
     AuthModule,
     ClinicsModule,
+    UserManagementModule,
     AppointmentsModule,
     EventsModule,
     ScheduledVaccinationsModule,
@@ -47,6 +50,7 @@ import { PatientsModule } from './patients/patients.module';
     DoctorsModule,
     // --- 2. Daftarkan PatientsModule di sini ---
     PatientsModule,
+    NotificationsModule,
   ],
   controllers: [AppController],
   providers: [AppService],

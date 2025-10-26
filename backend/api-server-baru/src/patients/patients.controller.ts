@@ -10,7 +10,7 @@ export class PatientsController {
   constructor(private readonly patientsService: PatientsService) {}
 
   @Get(':id/history')
-  @Roles('Admin', 'Doctor') // Hanya Admin dan Dokter yang bisa mengakses
+  @Roles('Admin', 'Doctor', 'AdminKlinik') // Hanya Admin dan Dokter yang bisa mengakses
   findHistory(@Param('id') id: string) {
     return this.patientsService.findPatientHistory(id);
   }

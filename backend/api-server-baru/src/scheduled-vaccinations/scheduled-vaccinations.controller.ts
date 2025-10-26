@@ -13,7 +13,7 @@ export class ScheduledVaccinationsController {
 
   // Endpoint ini HANYA untuk DOKTER
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('Doctor')
+  @Roles('Doctor', 'AdminKlinik')
   @Post()
   create(@Request() req, @Body() createDto: CreateScheduledVaccinationDto) {
     // Kita teruskan data dokter dari token login ke service
