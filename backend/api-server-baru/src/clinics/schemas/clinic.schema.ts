@@ -34,8 +34,8 @@ export class Clinic {
   @Prop({ required: false, type: Date })
   registrationCloseTime?: Date;
 
-  @Prop({ type: Number, default: 0 })
-  nowServing: number;
+  // @Prop({ type: Number, default: 0 })
+  // nowServing: number;
 
   @Prop({
     type: String,
@@ -47,3 +47,4 @@ export class Clinic {
 }
 
 export const ClinicSchema = SchemaFactory.createForClass(Clinic);
+

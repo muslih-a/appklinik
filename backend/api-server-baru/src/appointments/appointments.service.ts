@@ -6,7 +6,9 @@ import {
   Logger,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
+// MongooseModule tidak perlu diimpor di sini, hanya di file .module.ts
+// import { MongooseModule } from '@nestjs/mongoose';
+import { Model, Types } from 'mongoose'; // <-- Tambahkan Types jika belum
 import { Appointment, AppointmentDocument } from './schemas/appointment.schema';
 import { Clinic, ClinicDocument } from '../clinics/schemas/clinic.schema';
 import { CreateAppointmentDto } from './dto/create-appointment.dto';
@@ -16,10 +18,10 @@ import {
   ScheduledVaccination,
   ScheduledVaccinationDocument,
 } from '../scheduled-vaccinations/schemas/scheduled-vaccination.schema';
-// 1. Impor EventEmitter2
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { NotificationService } from '../notifications/notifications.service'; // <-- 1. Import NotificationService
-import { UserDocument } from 'src/auth/schemas/user.schema'; // <-- Pastikan UserDocument diimpor jika belum
+import { NotificationService } from '../notifications/notifications.service';
+// Pastikan UserDocument diimpor
+import { User, UserDocument } from '../auth/schemas/user.schema';
 
 interface AuthenticatedUser {
   id: string;
@@ -36,18 +38,19 @@ export class AppointmentsService {
     private clinicModel: Model<ClinicDocument>,
     @InjectModel(ScheduledVaccination.name)
     private scheduledVaccinationModel: Model<ScheduledVaccinationDocument>,
-    // 2. Ganti EventsGateway dengan EventEmitter2
+    @InjectModel(User.name) // Injeksi UserModel sudah ada
+    private userModel: Model<UserDocument>,
     private readonly eventEmitter: EventEmitter2,
-    private readonly notificationService: NotificationService, // <-- 2. Inject NotificationService
+    private readonly notificationService: NotificationService,
   ) {}
-  
+
   // Method bantu untuk memicu event update antrean
   private async triggerQueueUpdate(clinicId: string) {
+    // Fungsi ini tidak perlu diubah
     const activeQueue = await this.findActiveQueueForClinic(clinicId);
     const onHoldQueue = await this.findOnHoldQueueForClinic(clinicId);
     const dailyHistory = await this.findDailyHistoryForClinic(clinicId);
-    
-    // 3. Buat "pengumuman" ke sistem internal
+
     this.eventEmitter.emit('queue.updated', {
       clinicId,
       payload: { activeQueue, onHoldQueue, dailyHistory },
@@ -55,6 +58,7 @@ export class AppointmentsService {
   }
 
   async create(createAppointmentDto: CreateAppointmentDto): Promise<Appointment> {
+    // Fungsi ini tidak perlu diubah
     const { patientId, doctorId, clinicId, appointmentTime } = createAppointmentDto;
 
     const clinic = await this.clinicModel.findById(clinicId);
@@ -94,7 +98,7 @@ export class AppointmentsService {
         $lte: endOfDayForNewAppt,
       },
     });
-    
+
     if (existingAppointmentOnThatDay) {
       throw new ConflictException(
         'Pasien sudah memiliki janji temu aktif pada tanggal tersebut.',
@@ -120,140 +124,148 @@ export class AppointmentsService {
       appointmentTime,
       queueNumber,
     });
-    
-    const savedAppointment = await newAppointment.save();
-    
-    // Kirim update setelah janji temu baru dibuat
-    await this.triggerQueueUpdate(clinicId);
 
+    const savedAppointment = await newAppointment.save();
+    await this.triggerQueueUpdate(clinicId);
     return savedAppointment;
   }
-  
+
   async updateStatus(
     id: string,
     updateAppointmentStatusDto: UpdateAppointmentStatusDto,
   ): Promise<Appointment> {
     const { status } = updateAppointmentStatusDto;
 
-    // Gunakan .populate untuk mendapatkan data pasien dan klinik sekaligus
-    let appointmentToUpdate = await this.appointmentModel.findById(id)
-      .populate<{ patient: UserDocument }>('patient') // Populate data pasien
-      .populate<{ clinic: ClinicDocument }>('clinic'); // Populate data klinik
+    // Populate doctor sudah ada
+    const appointmentToUpdate = await this.appointmentModel.findById(id)
+      .populate<{ patient: UserDocument }>('patient')
+      .populate<{ clinic: ClinicDocument }>('clinic')
+      .populate<{ doctor: UserDocument }>('doctor');
 
     if (!appointmentToUpdate) {
       throw new NotFoundException(`Janji temu dengan ID "${id}" tidak ditemukan`);
     }
 
-    // Ambil clinicId dari data yang sudah di-populate
-    const clinicId = appointmentToUpdate.clinic.id.toString();
-    const clinicName = appointmentToUpdate.clinic.name; // Ambil nama klinik
+    // Pastikan clinic tidak null sebelum akses properti
+    const clinicId = appointmentToUpdate.clinic?.id?.toString();
+    const clinicName = appointmentToUpdate.clinic?.name;
+    const doctor = appointmentToUpdate.doctor;
+    const queueNumber = appointmentToUpdate.queueNumber;
 
-    // --> [MODIFIKASI LOGIKA UPDATE STATUS] <--
-    const previousStatus = appointmentToUpdate.status; // Simpan status sebelumnya
+    // Jika clinicId tidak ada, mungkin ada masalah data
+    if (!clinicId || !clinicName) {
+        this.logger.error(`Data clinic tidak lengkap untuk appointment ${id}`);
+        throw new NotFoundException(`Data klinik terkait janji temu ${id} tidak ditemukan.`);
+    }
+
+
+    const previousStatus = appointmentToUpdate.status;
     let updatePayload: any = {};
     const now = new Date();
 
+    // Logika penentuan payload (tidak berubah)
     if (status === 'SKIPPED' && previousStatus !== 'ON_HOLD') {
-      appointmentToUpdate.status = 'ON_HOLD';
-      appointmentToUpdate.onHoldTime = now;
-      // Jangan langsung save, biarkan dihandle oleh findByIdAndUpdate di bawah
+      updatePayload = { status: 'ON_HOLD', onHoldTime: now };
     } else {
-        updatePayload.status = status; // Set status baru
-
-        // Logika waktu berdasarkan status baru
-        if (status === 'IN_PROGRESS' && !appointmentToUpdate.consultationStartTime) {
-          updatePayload.consultationStartTime = now;
-        }
-        if (status === 'COMPLETED' && !appointmentToUpdate.consultationEndTime) {
-            updatePayload.consultationEndTime = now;
-        }
-        // Jika status kembali ke WAITING dari ON_HOLD, hapus onHoldTime
-        if (status === 'WAITING' && previousStatus === 'ON_HOLD') {
-            updatePayload.$unset = { onHoldTime: 1 };
-        }
-    }
-    // Gabungkan perubahan status (jika skipped) ke payload utama
-    if (appointmentToUpdate.status === 'ON_HOLD' && status === 'SKIPPED') {
-      updatePayload = {
-        ...updatePayload, // Gabungkan payload lain jika ada
-        status: 'ON_HOLD',
-        onHoldTime: appointmentToUpdate.onHoldTime
-      };
-    } else if (status !== 'SKIPPED') {
-      // Jika bukan skipped, pastikan status di payload benar
       updatePayload.status = status;
+      if (status === 'IN_PROGRESS' && !appointmentToUpdate.consultationStartTime) {
+        updatePayload.consultationStartTime = now;
+      }
+      if (status === 'COMPLETED' && !appointmentToUpdate.consultationEndTime) {
+        updatePayload.consultationEndTime = now;
+      }
+      if (status === 'WAITING' && previousStatus === 'ON_HOLD') {
+        updatePayload.$unset = { onHoldTime: 1 };
+      }
     }
 
-    // Lakukan update di database
-    const updatedAppointment = await this.appointmentModel.findByIdAndUpdate(
-        id,
-        updatePayload,
-        { new: true }, // Mengembalikan dokumen yang sudah terupdate
-    )
-      .populate<{ patient: UserDocument }>('patient') // Populate lagi untuk mendapatkan data terbaru
-      .populate<{ clinic: ClinicDocument }>('clinic');
+    // Update nowServingDoctor saat IN_PROGRESS (logika sudah ada dan benar)
+    if (status === 'IN_PROGRESS' && doctor && doctor.role === 'Doctor') {
+        try {
+            await this.userModel.updateOne(
+                { _id: doctor._id },
+                { $set: { nowServingDoctor: queueNumber } }
+            ).exec();
+            this.logger.log(`nowServingDoctor untuk dokter ${doctor._id} diupdate ke ${queueNumber}`);
+        } catch (err) {
+            this.logger.error(`Gagal mengupdate nowServingDoctor untuk dokter ${doctor._id}`, err);
+        }
+    }
 
+    // Update appointment
+    const updatedAppointment = await this.appointmentModel.findByIdAndUpdate(
+      id,
+      updatePayload,
+      { new: true },
+    )
+      .populate<{ patient: UserDocument }>('patient')
+      .populate<{ clinic: ClinicDocument }>('clinic')
+      .populate<{ doctor: UserDocument }>('doctor');
 
     if (!updatedAppointment) {
       throw new NotFoundException(
         `Janji temu dengan ID "${id}" tidak ditemukan setelah proses update`,
       );
     }
-    // ---------------------------------------------------
 
-    // Panggil event update antrean (WebSocket)
+    // Trigger WebSocket (tidak berubah)
     await this.triggerQueueUpdate(clinicId);
 
-    // ---> [LOGIKA KIRIM NOTIFIKASI PUSH] <---
-    // Kirim notifikasi jika status berubah menjadi 'WAITING' (dipanggil dari antrian)
-    // atau 'IN_PROGRESS' (dipanggil langsung/mulai konsultasi)
+    // Kirim Notifikasi Push (tidak berubah)
     const shouldNotify = (status === 'WAITING' && previousStatus !== 'WAITING') ||
                          (status === 'IN_PROGRESS' && previousStatus !== 'IN_PROGRESS');
 
     if (shouldNotify) {
-      const patient = updatedAppointment.patient; // Ambil data pasien dari hasil populate
-      if (patient && patient.expoPushToken) {
+      const patient = updatedAppointment.patient;
+      // Gunakan clinicName yang sudah divalidasi
+      if (patient && patient.expoPushToken && clinicName) {
         this.logger.log(`Mencoba mengirim notifikasi panggilan ke pasien ID: ${patient._id}`);
-        // Kirim notifikasi tanpa menunggu (async) agar tidak memblok response API
         this.notificationService.sendPatientCallNotification(
-            patient.expoPushToken,
-            clinicName, // Gunakan nama klinik dari hasil populate
-            updatedAppointment.queueNumber, // Sertakan nomor antrian
+          patient.expoPushToken,
+          clinicName,
+          updatedAppointment.queueNumber,
         ).catch(err => {
-            // Log error jika pengiriman gagal, tapi jangan throw error ke client
-            this.logger.error(`Error background saat mengirim notifikasi untuk appointment ${id}: ${err.message}`);
+          this.logger.error(`Error background saat mengirim notifikasi untuk appointment ${id}: ${err.message}`);
         });
-      } else {
+      } else if (!patient?.expoPushToken) {
         this.logger.warn(
           `Expo Push Token tidak ditemukan untuk pasien ID: ${patient?._id} pada appointment ${id}. Tidak dapat mengirim notifikasi panggilan.`,
         );
       }
     }
-    // ----------------------------------------------------
 
-    return updatedAppointment; // Kembalikan appointment yang sudah terupdate
+    return updatedAppointment;
   }
 
+
   async cancelByUser(appointmentId: string, patientId: string): Promise<Appointment> {
+    // Fungsi ini tidak perlu diubah
     const appointment = await this.appointmentModel.findById(appointmentId);
 
     if (!appointment) {
       throw new NotFoundException(`Appointment with ID "${appointmentId}" not found`);
     }
-    if (appointment.patient.toString() !== patientId) {
+    // Pastikan patient ID valid sebelum toString()
+    if (!appointment.patient || appointment.patient.toString() !== patientId) {
       throw new ForbiddenException('Anda tidak berhak membatalkan janji temu ini.');
     }
-    
+
     appointment.status = 'CANCELLED';
     await appointment.save();
 
-    await this.triggerQueueUpdate(appointment.clinic.toString());
+    // Pastikan clinic ID valid sebelum toString()
+    if (appointment.clinic) {
+        await this.triggerQueueUpdate(appointment.clinic.toString());
+    } else {
+        this.logger.warn(`Clinic ID tidak ditemukan pada appointment ${appointmentId} saat cancel.`);
+    }
+
 
     return appointment;
   }
-  
-  // ... SISA FILE (findActiveQueueForClinic, findOnHoldQueueForClinic, dll.) TIDAK BERUBAH ...
+
   async findActiveQueueForClinic(clinicId: string): Promise<Appointment[]> {
+    // Fungsi ini tidak perlu diubah, tapi populate dokter mungkin berguna
     const startOfDay = new Date();
     startOfDay.setHours(0, 0, 0, 0);
     const endOfDay = new Date();
@@ -266,11 +278,13 @@ export class AppointmentsService {
       },
       status: { $in: ['SCHEDULED', 'WAITING', 'IN_PROGRESS'] }
     })
-      .populate('patient')
+      .populate('patient', 'name') // Pilih field patient yg relevan
+      .populate('doctor', 'name') // Populate dokter juga
       .sort({ queueNumber: 'asc' })
       .exec();
   }
   async findOnHoldQueueForClinic(clinicId: string): Promise<Appointment[]> {
+    // Fungsi ini tidak perlu diubah
     const startOfDay = new Date();
     startOfDay.setHours(0, 0, 0, 0);
     const endOfDay = new Date();
@@ -283,11 +297,13 @@ export class AppointmentsService {
       },
       status: 'ON_HOLD'
     })
-      .populate('patient')
+      .populate('patient', 'name')
+      .populate('doctor', 'name')
       .sort({ onHoldTime: 'asc' })
       .exec();
   }
   async findDailyHistoryForClinic(clinicId: string): Promise<Appointment[]> {
+    // Fungsi ini tidak perlu diubah
     const startOfDay = new Date();
     startOfDay.setHours(0, 0, 0, 0);
     const endOfDay = new Date();
@@ -297,33 +313,45 @@ export class AppointmentsService {
       appointmentTime: { $gte: startOfDay, $lte: endOfDay },
       status: { $in: ['SCHEDULED', 'WAITING', 'IN_PROGRESS', 'COMPLETED', 'SKIPPED', 'CANCELLED', 'ON_HOLD'] },
     })
-      .populate('patient')
+      .populate('patient', 'name')
+      .populate('doctor', 'name')
       .sort({ queueNumber: 'asc' })
       .exec();
   }
+
+  // --- [PERUBAHAN FASE 3 - LANGKAH 6 SUDAH DITERAPKAN] ---
   async findMyAppointmentForToday(patientId: string) {
     const startOfDay = new Date();
     startOfDay.setHours(0, 0, 0, 0);
     const endOfDay = new Date();
     endOfDay.setHours(23, 59, 59, 999);
+
     const myAppointment = await this.appointmentModel
       .findOne({
         patient: patientId,
         appointmentTime: { $gte: startOfDay, $lte: endOfDay },
         status: { $in: ['SCHEDULED', 'WAITING', 'IN_PROGRESS', 'ON_HOLD'] },
       })
-      .populate({
-        path: 'clinic',
-        select: 'averageConsultationTime openingTime nowServing',
+      .populate<{ clinic: ClinicDocument }>({
+         path: 'clinic',
+         select: 'averageConsultationTime openingTime name',
+      })
+      .populate<{ doctor: UserDocument }>({
+         path: 'doctor',
+         select: 'nowServingDoctor',
       })
       .exec();
+
     if (!myAppointment) {
       return null;
     }
-    const clinicData = myAppointment.clinic as ClinicDocument;
-    const nowServingNumber = clinicData.nowServing || 0;
+
+    const clinicData = myAppointment.clinic as ClinicDocument | null;
+    const doctorData = myAppointment.doctor as UserDocument | null;
+    const nowServingNumber = doctorData?.nowServingDoctor ?? 0;
     let estimatedStartTime: Date | null = null;
-    if (clinicData && clinicData.averageConsultationTime && myAppointment.queueNumber > nowServingNumber) {
+
+    if (clinicData && doctorData && clinicData.averageConsultationTime && myAppointment.queueNumber > nowServingNumber) {
       const patientsAhead = myAppointment.queueNumber - nowServingNumber - 1;
       const averageTime = clinicData.averageConsultationTime;
       const waitTimeInMinutes = patientsAhead >= 0 ? patientsAhead * averageTime : 0;
@@ -334,24 +362,35 @@ export class AppointmentsService {
       const calculationBaseTime = now > openingTimeToday ? now : openingTimeToday;
       estimatedStartTime = new Date(calculationBaseTime.getTime() + waitTimeInMinutes * 60000);
     }
+
+    const appointmentObject = myAppointment.toObject();
     return {
-      ...myAppointment.toObject(),
+      ...appointmentObject,
+      clinic: clinicData ? { _id: clinicData._id, name: clinicData.name, averageConsultationTime: clinicData.averageConsultationTime, openingTime: clinicData.openingTime } : null,
+      doctor: doctorData ? { _id: doctorData._id, nowServingDoctor: doctorData.nowServingDoctor } : null,
       estimatedStartTime: estimatedStartTime,
       nowServing: nowServingNumber,
     };
   }
+  // --- [AKHIR PERUBAHAN FASE 3 - LANGKAH 6] ---
+
+
   async findHistoryForDoctor(
     user: AuthenticatedUser,
     status?: string,
     startDate?: Date,
     endDate?: Date,
   ) {
+    // Fungsi ini tidak perlu diubah
     const query: any = { doctor: user.id };
     if (status) {
       query.status = status;
     }
     if (startDate && endDate) {
-      query.appointmentTime = { $gte: startDate, $lte: endDate };
+        // Pastikan konversi ke Date jika inputnya string
+        const start = startDate instanceof Date ? startDate : new Date(startDate || 0);
+        const end = endDate instanceof Date ? endDate : new Date(endDate || Date.now());
+        query.appointmentTime = { $gte: start, $lte: end };
     }
     const results = await this.appointmentModel
       .find(query)
@@ -368,40 +407,47 @@ export class AppointmentsService {
     startDate: Date,
     endDate: Date,
   ) {
+    // Fungsi ini tidak perlu diubah, tapi pastikan date valid
+    const start = startDate instanceof Date ? startDate : new Date(startDate || 0);
+    const end = endDate instanceof Date ? endDate : new Date(endDate || Date.now());
+
     const appointments = await this.appointmentModel
       .find({
         doctor: user.id,
-        appointmentTime: { $gte: startDate, $lte: endDate },
+        appointmentTime: { $gte: start, $lte: end },
         status: { $in: ['SCHEDULED', 'WAITING', 'IN_PROGRESS', 'ON_HOLD'] },
       })
-      .populate('patient', 'name')
+      .populate<{patient: User}>('patient', 'name')
       .sort({ appointmentTime: 'asc' })
       .exec();
     const vaccinations = await this.scheduledVaccinationModel
       .find({
         doctor: user.id,
-        scheduledDate: { $gte: startDate, $lte: endDate },
+        scheduledDate: { $gte: start, $lte: end },
         status: 'SCHEDULED',
       })
-      .populate('patient', 'name')
+      .populate<{patient: User}>('patient', 'name')
       .sort({ scheduledDate: 'asc' })
       .exec();
+
     const combinedSchedule = [
       ...appointments.map(appt => ({
         id: appt._id,
-        title: `Konsultasi: ${appt.patient.name}`,
+        title: `Konsultasi: ${appt.patient?.name || 'Pasien ???'}`,
         start: appt.appointmentTime,
-        end: new Date(new Date(appt.appointmentTime).getTime() + 60 * 60 * 1000),
+        // Estimasi end time, bisa disesuaikan
+        end: new Date(new Date(appt.appointmentTime).getTime() + (appt.clinic?.averageConsultationTime || 15) * 60000),
         type: 'appointment'
       })),
       ...vaccinations.map(vax => ({
         id: vax._id,
-        title: `Vaksin (${vax.vaccineName}): ${vax.patient.name}`,
+        title: `Vaksin (${vax.vaccineName}): ${vax.patient?.name || 'Pasien ???'}`,
         start: vax.scheduledDate,
-        end: new Date(new Date(vax.scheduledDate).getTime() + 30 * 60 * 1000),
+        end: new Date(new Date(vax.scheduledDate).getTime() + 15 * 60000), // Estimasi 15 menit?
         type: 'vaccination'
       }))
     ];
+
     combinedSchedule.sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime());
     return combinedSchedule;
   }
@@ -409,6 +455,7 @@ export class AppointmentsService {
     id: string,
     recordEmrDto: RecordEmrDto,
   ): Promise<Appointment> {
+    // Fungsi ini tidak perlu diubah
     const appointment = await this.appointmentModel.findByIdAndUpdate(
       id,
       { $set: recordEmrDto },
@@ -420,6 +467,7 @@ export class AppointmentsService {
     return appointment;
   }
   async findForPatient(patientId: string): Promise<Appointment[]> {
+    // Fungsi ini tidak perlu diubah
     return this.appointmentModel
       .find({ patient: patientId })
       .populate('doctor', 'name')
@@ -428,6 +476,7 @@ export class AppointmentsService {
       .exec();
   }
   async getActiveQueue(clinicId: string): Promise<AppointmentDocument[]> {
+     // Fungsi ini tidak perlu diubah, tapi mungkin bisa lebih spesifik
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     const tomorrow = new Date(today);
@@ -435,8 +484,8 @@ export class AppointmentsService {
     const queue = await this.appointmentModel
       .find({
         clinic: clinicId,
-        status: 'WAITING',
-        createdAt: {
+        status: 'WAITING', // Hanya yang sudah dipanggil
+        appointmentTime: { // Filter janji temu hari ini
           $gte: today,
           $lt: tomorrow,
         },

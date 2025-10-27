@@ -41,6 +41,11 @@ export class User {
   // --- [FIELD BARU DITAMBAHKAN DI SINI] ---
   @Prop({ type: Date, required: false }) // Dibuat opsional, tapi wajib untuk pasien
   dateOfBirth?: Date;
+
+  // --- [TAMBAHKAN FIELD BARU DI SINI] ---
+  @Prop({ type: Number, default: 0, required: false }) // Default 0, opsional karena hanya relevan untuk Dokter
+  nowServingDoctor?: number;
+  // ------------------------------------
 }
 
 export const UserSchema = SchemaFactory.createForClass(User);
